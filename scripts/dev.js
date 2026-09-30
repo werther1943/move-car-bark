@@ -2,6 +2,11 @@
  * 本地预览：npm run dev
  * 用 Node 内置 http + 全局 Request/Response 模拟边缘函数运行时，
  * 配置从 .env（或环境变量）读取，访问 http://localhost:8787 预览页面。
+ *
+ * 路由刻意复刻真实部署形态：
+ *   /        → 根目录 index.html（静态托管）
+ *   /api/*   → 边缘函数
+ *   /ssr     → 服务端渲染版（functions/index.js 的效果），用于对照
  */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -40,13 +45,23 @@ http
       else headers.set(k, v);
     });
 
-    const request = new Request('http://localhost:' + PORT + req.url, {
-      method: req.method,
-      headers,
-      body: ['GET', 'HEAD'].includes(req.method) ? undefined : body,
-    });
+    const url = new URL(req.url, 'http://localhost');
 
     try {
+      if ((url.pathname === '/' || url.pathname === '/index.html') && fs.existsSync(path.join(root, 'index.html'))) {
+        const buf = fs.readFileSync(path.join(root, 'index.html'));
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=UTF-8', 'Cache-Control': 'no-cache' });
+        res.end(buf);
+        return;
+      }
+
+      const target = url.pathname === '/ssr' ? '/' + (url.search || '') : req.url;
+      const request = new Request('http://localhost:' + PORT + target, {
+        method: req.method,
+        headers,
+        body: ['GET', 'HEAD'].includes(req.method) ? undefined : body,
+      });
+
       const response = await handleRequest(request, env);
       const buf = Buffer.from(await response.arrayBuffer());
       res.writeHead(response.status, Object.fromEntries(response.headers));
@@ -58,5 +73,7 @@ http
   })
   .listen(PORT, () => {
     console.log('本地预览已启动： http://localhost:' + PORT);
+    console.log('  /      静态 index.html（等同线上静态托管的形态）');
+    console.log('  /ssr   服务端渲染版（等同 functions/index.js 的形态）');
     console.log('当前 BARK_KEY：' + (env.BARK_KEY ? '已配置' : '未配置（在 .env 中填写后可真实推送）'));
   });

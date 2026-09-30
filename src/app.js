@@ -322,7 +322,7 @@ function publicConfig(cfg) {
     tip: cfg.tip,
     hasPhone: !!cfg.phone,
     phone: cfg.phone ? (cfg.showPhone ? cfg.phone : maskPhone(cfg.phone)) : '',
-    rawPhone: cfg.showPhone && cfg.phone ? cfg.phone : '',
+    rawPhone: cfg.phone || '',
     cooldown: cfg.cooldown,
     configured: barkKeys(cfg).length > 0,
   };
@@ -359,32 +359,24 @@ async function handleRequest(request, env) {
 /* 页面                                                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 页面骨架。
+ *
+ * 这里刻意只输出「骨架 + 内联配置」，具体内容交给 CLIENT_JS 渲染，原因是：
+ *   1. 服务端渲染（functions/index.js）时内联配置已带真实值，首屏无闪烁；
+ *   2. 纯静态部署（根目录 index.html）时内联配置是构建期烘焙的默认值，
+ *      客户端会再拉一次 /api/config 校正 —— 同一份代码因此可以在
+ *      「有边缘函数」和「只有静态托管」两种环境下都正常工作。
+ */
 function renderPage(cfg) {
   const ready = barkKeys(cfg).length > 0;
-  const phoneHref = cfg.phone ? 'tel:' + cfg.phone : '';
-  const phoneText = cfg.phone ? (cfg.showPhone ? cfg.phone : maskPhone(cfg.phone)) : '';
-
-  const plateBlock = cfg.plate
-    ? '<div class="plate"><span class="plate-tag">车辆</span><span class="plate-no">' +
-      escapeHtml(cfg.plate) +
-      '</span></div>'
-    : '';
-
-  const callBlock = cfg.phone
-    ? '<a class="btn btn-ghost" href="' +
-      escapeHtml(phoneHref) +
-      '"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.2 2.4 3.2 4.4 5.6 5.6l2.1-2.1c.3-.3.7-.4 1.1-.2 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.2 1.1l-2.3 2.1z"/></svg><span>拨打车主电话 ' +
-      escapeHtml(phoneText) +
-      '</span></a>'
-    : '';
-
-  const warnBlock = ready
-    ? ''
-    : '<div class="warn">服务端尚未配置 <code>BARK_KEY</code>，推送功能不可用。请在 EdgeOne 控制台的「环境变量」中添加后重新部署。</div>';
 
   const inlineCfg = JSON.stringify({
+    title: cfg.title,
+    tip: cfg.tip,
     plate: cfg.plate,
-    hasPhone: !!cfg.phone,
+    phone: cfg.phone,
+    phoneDisplay: cfg.phone ? (cfg.showPhone ? cfg.phone : maskPhone(cfg.phone)) : '',
     cooldown: cfg.cooldown,
     ready: ready,
   }).replace(/</g, '\\u003c');
@@ -407,19 +399,21 @@ function renderPage(cfg) {
     '</head>\n' +
     '<body>\n' +
     '<main class="card">\n' +
-    '  <div class="brand"><span class="brand-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.5 16c-.83 0-1.5-.67-1.5-1.5S5.67 13 6.5 13s1.5.67 1.5 1.5S7.33 16 6.5 16zm11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM5 11l1.5-4.5h11L19 11H5z"/></svg></span>' +
+    '  <div class="brand"><span class="brand-icon">' +
+    CAR_SVG +
+    '</span><span id="mcTitle">' +
     escapeHtml(cfg.title) +
-    '</div>\n' +
-    plateBlock +
-    '  <p class="tip">' +
+    '</span></div>\n' +
+    '  <div id="mcPlate"></div>\n' +
+    '  <p class="tip" id="mcTip">' +
     escapeHtml(cfg.tip) +
     '</p>\n' +
-    warnBlock +
+    '  <div id="mcWarn"></div>\n' +
     '  <button id="btnNotify" class="btn btn-primary" type="button">\n' +
     '    <span class="spinner" aria-hidden="true"></span>\n' +
     '    <span id="btnText">通知车主挪车</span>\n' +
     '  </button>\n' +
-    callBlock +
+    '  <div id="mcCall"></div>\n' +
     '  <div id="status" class="status" role="status" aria-live="polite"></div>\n' +
     '  <p class="foot">通知将以 Bark 推送直达车主手机 · 不会透露您的联系方式</p>\n' +
     '</main>\n' +
@@ -433,6 +427,9 @@ function renderPage(cfg) {
     '</html>'
   );
 }
+
+const CAR_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.5 16c-.83 0-1.5-.67-1.5-1.5S5.67 13 6.5 13s1.5.67 1.5 1.5S7.33 16 6.5 16zm11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM5 11l1.5-4.5h11L19 11H5z"/></svg>';
 
 const CSS = [
   '*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}',
@@ -474,44 +471,68 @@ const CSS = [
 ].join('');
 
 const CLIENT_JS = [
-  "(function(){",
-  "var cfg={plate:'',hasPhone:false,cooldown:60,ready:true};",
-  "try{cfg=JSON.parse(document.getElementById('mc-cfg').textContent||'{}')}catch(e){}",
-  "var btn=document.getElementById('btnNotify');",
-  "var btnText=document.getElementById('btnText');",
-  "var statusEl=document.getElementById('status');",
-  "var STORE='mc_notify_until';",
-  "var timer=null;",
-  "function setStatus(text,cls){statusEl.textContent=text||'';statusEl.className='status'+(cls?' '+cls:'');}",
-  "function until(){try{return parseInt(localStorage.getItem(STORE)||'0',10)}catch(e){return 0}}",
-  "function lock(sec){try{localStorage.setItem(STORE,String(Date.now()+sec*1000))}catch(e){}startTick();}",
-  "function startTick(){",
-  "  if(timer)clearInterval(timer);",
-  "  timer=setInterval(function(){",
-  "    var left=Math.ceil((until()-Date.now())/1000);",
-  "    if(left<=0){clearInterval(timer);timer=null;btn.disabled=false;btn.classList.remove('is-loading');btnText.textContent='通知车主挪车';setStatus('');return;}",
-  "    btn.disabled=true;btnText.textContent='请等待 '+left+' 秒';",
-  "  },1000);",
-  "  var left0=Math.ceil((until()-Date.now())/1000);",
-  "  if(left0>0){btn.disabled=true;btnText.textContent='请等待 '+left0+' 秒';}",
-  "}",
-  "btn.addEventListener('click',function(){",
-  "  if(!cfg.ready){setStatus('服务未配置 Bark 推送，请联系车主','err');return;}",
-  "  if(btn.disabled)return;",
-  "  btn.disabled=true;btn.classList.add('is-loading');btnText.textContent='正在发送…';setStatus('');",
-  "  fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})",
-  "  .then(function(r){return r.json().then(function(d){return {status:r.status,data:d}})})",
-  "  .then(function(res){",
-  "    var d=res.data||{};var cd=parseInt(d.cooldown||cfg.cooldown||60,10);",
-  "    if(d.ok){setStatus('\u5df2\u901a\u77e5\u8f66\u4e3b\uff0c\u8bf7\u7a0d\u7b49\u7247\u523b','ok');lock(cd);}",
-  "    else{btn.classList.remove('is-loading');btn.disabled=false;btnText.textContent='通知车主挪车';",
-  "      var t=(d.code==='COOLDOWN'||d.code==='LIMIT')?('发送太频繁了，'+ (d.retryAfter||60) +' 秒后再试'):('发送失败：'+(d.message||'请稍后重试'));",
-  "      setStatus(t,'err');if(d.code==='COOLDOWN'||d.code==='LIMIT')lock(d.retryAfter||cd);}",
-  "  })",
-  "  .catch(function(){btn.classList.remove('is-loading');btn.disabled=false;btnText.textContent='通知车主挪车';setStatus('网络异常，请稍后重试','err');});",
-  "});",
-  "startTick();",
-  "})();",
+  '(function(){',
+  'function el(id){return document.getElementById(id)||{style:{},classList:{add:function(){},remove:function(){}}};}',
+  'function esc(s){return String(s==null?"":""+s).replace(/[&<>]/g,function(c){return c==="&"?"&amp;":(c==="<"?"&lt;":"&gt;");});}',
+  'var cfg={title:"",tip:"",plate:"",phone:"",phoneDisplay:"",cooldown:60,ready:true};',
+  'try{var rawEl=document.getElementById("mc-cfg");var raw=JSON.parse((rawEl&&rawEl.textContent)||"{}");for(var k in raw){if(Object.prototype.hasOwnProperty.call(raw,k))cfg[k]=raw[k];}}catch(e){}',
+  'var PHONE_SVG=\'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.2 2.4 3.2 4.4 5.6 5.6l2.1-2.1c.3-.3.7-.4 1.1-.2 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.2 1.1l-2.3 2.1z"/></svg>\';',
+  'var btn=el("btnNotify"),btnText=el("btnText"),statusEl=el("status");',
+  'var STORE="mc_notify_until",timer=null,apiState="pending";',
+  'function setStatus(t,c){statusEl.textContent=t||"";statusEl.className="status"+(c?" "+c:"");}',
+  'function until(){try{return parseInt(localStorage.getItem(STORE)||"0",10);}catch(e){return 0;}}',
+  'function lock(sec){try{localStorage.setItem(STORE,String(Date.now()+sec*1000));}catch(e){}startTick();}',
+  'function startTick(){',
+  '  if(timer){clearInterval(timer);timer=null;}',
+  '  var check=function(){',
+  '    var left=Math.ceil((until()-Date.now())/1000);',
+  '    if(left<=0){if(timer){clearInterval(timer);timer=null;}btn.disabled=false;btn.classList.remove("is-loading");btnText.textContent="通知车主挪车";setStatus("");return false;}',
+  '    btn.disabled=true;btnText.textContent="请等待 "+left+" 秒";return true;',
+  '  };',
+  '  if(check()){timer=setInterval(check,1000);}',
+  '}',
+  'function render(){',
+  '  var t=cfg.title||"通知车主挪车";',
+  '  document.title=t;',
+  '  el("mcTitle").textContent=t;',
+  '  el("mcTip").textContent=cfg.tip||"";',
+  '  el("mcPlate").innerHTML=cfg.plate?\'<div class="plate"><span class="plate-tag">车辆</span><span class="plate-no">\'+esc(cfg.plate)+"</span></div>":"";',
+  '  el("mcCall").innerHTML=cfg.phone?\'<a class="btn btn-ghost" href="tel:\'+esc(cfg.phone)+\'">\'+PHONE_SVG+"<span>拨打车主电话 "+esc(cfg.phoneDisplay||cfg.phone)+"</span></a>":"";',
+  '  var w="";',
+  '  if(apiState==="fail"){w=\'<div class="warn">未检测到服务端接口 <code>/api/config</code>。推送需要随站点一起部署边缘函数（<code>edge-functions/</code> 或 <code>functions/</code> 目录）。</div>\';}',
+  '  else if(apiState==="ok"&&!cfg.ready){w=\'<div class="warn">服务端尚未配置 <code>BARK_KEY</code>，推送功能不可用。请在 EdgeOne 控制台「环境变量」中添加后重新部署。</div>\';}',
+  '  el("mcWarn").innerHTML=w;',
+  '}',
+  'function applyCfg(d){',
+  '  if(typeof d.plate==="string")cfg.plate=d.plate;',
+  '  if(d.title)cfg.title=d.title;',
+  '  if(d.tip)cfg.tip=d.tip;',
+  '  if(d.rawPhone)cfg.phone=d.rawPhone;',
+  '  if(d.phone)cfg.phoneDisplay=d.phone;',
+  '  if(d.cooldown!==undefined&&d.cooldown!==null)cfg.cooldown=parseInt(d.cooldown,10)||0;',
+  '  cfg.ready=d.configured!==false;',
+  '}',
+  'btn.addEventListener("click",function(){',
+  '  if(btn.disabled)return;',
+  '  btn.disabled=true;btn.classList.add("is-loading");btnText.textContent="正在发送…";setStatus("");',
+  '  fetch("/api/notify",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})',
+  '  .then(function(r){var ct=(r.headers.get("content-type")||"").toLowerCase();if(ct.indexOf("json")<0){var e=new Error("NO_API");e.noapi=true;throw e;}return r.json().then(function(d){return {status:r.status,data:d||{}};});})',
+  '  .then(function(res){',
+  '    var d=res.data,cd=parseInt(d.cooldown||cfg.cooldown||60,10);',
+  '    if(d.ok){setStatus("已通知车主，请稍等片刻","ok");lock(cd);return;}',
+  '    btn.classList.remove("is-loading");btn.disabled=false;btnText.textContent="通知车主挪车";',
+  '    if(d.code==="COOLDOWN"||d.code==="LIMIT"){setStatus("发送太频繁了，"+(d.retryAfter||60)+" 秒后再试","err");lock(d.retryAfter||cd);}',
+  '    else{setStatus("发送失败："+(d.message||("错误 "+(d.code||res.status))),"err");}',
+  '  })',
+  '  .catch(function(err){btn.classList.remove("is-loading");btn.disabled=false;btnText.textContent="通知车主挪车";setStatus(err&&err.noapi?"推送接口未部署或不可用，请检查边缘函数是否随站点部署":"网络异常，请稍后重试","err");});',
+  '});',
+  'fetch("/api/config",{headers:{"Accept":"application/json"}})',
+  '  .then(function(r){var ct=(r.headers.get("content-type")||"").toLowerCase();if(!r.ok||ct.indexOf("json")<0)throw new Error("NO_API");return r.json();})',
+  '  .then(function(d){if(!d||d.ok!==true)throw new Error("BAD");applyCfg(d);apiState="ok";render();})',
+  '  .catch(function(){apiState="fail";render();});',
+  'render();',
+  'startTick();',
+  '})();',
 ].join('\n');
 
 /* 导出（打包脚本会剥离 export，生成 EdgeOne 单文件版本） */

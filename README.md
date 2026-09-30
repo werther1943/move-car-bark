@@ -37,17 +37,29 @@
 
 ```
 move-car-bark/
-├── worker.js                 # 单文件版：直接整段粘贴到 EdgeOne 边缘函数编辑器
-├── src/app.js                # 源码（页面渲染 + 路由 + Bark 推送 + 限流）
-├── functions/[[path]].js     # EdgeOne Pages Functions / Cloudflare Workers 入口
+├── index.html                    # 根目录静态页 —— 保证站点「存在」，任何托管都能打开
+├── worker.js                     # 单文件版：整段粘贴到 EdgeOne「边缘函数」编辑器
+├── src/app.js                    # 源码（页面渲染 + 路由 + Bark 推送 + 限流）
+├── edge-functions/               # EdgeOne Makers（*.edgeone.dev）
+│   ├── index.js                  #   → /
+│   ├── api/[[default]].js        #   → /api/notify、/api/config
+│   └── healthz.js                #   → /healthz
+├── functions/                    # EdgeOne Pages Functions（国际站）
+├── node-functions/               # EdgeOne Pages Node Functions（国内站）
 ├── scripts/
-│   ├── build-worker.js       # src/app.js → worker.js
-│   └── dev.js                # 本地预览（Node 内置 http，零依赖）
-├── .env.example              # 配置模板
+│   ├── build-worker.js           # src/app.js → 上面所有产物
+│   └── dev.js                    # 本地预览（Node 内置 http，零依赖）
+├── .env.example                  # 配置模板
 ├── package.json
-├── LICENSE                   # MIT
-└── docs/DEPLOY.md            # 详细部署步骤与排错
+├── LICENSE                       # MIT
+└── docs/DEPLOY.md                # 详细部署步骤与排错
 ```
+
+三个函数目录内容完全一样，平台只认自己那一个（Makers 读 `edge-functions/`、Pages 国际站读 `functions/`、Pages 国内站读 `node-functions/`），用不到的可以直接删掉。
+
+所有产物都是**自包含**的（核心逻辑已内联），不存在跨文件 import，避免 Pages 构建时打包失败。改代码只改 `src/app.js`，然后 `npm run build` 重新生成。
+
+> 重要：EdgeOne Pages / Makers 的边缘函数**不支持 `addEventListener('fetch')`**（那是「边缘函数」独立产品 / Cloudflare 的写法），必须用 `export async function onRequest(context)`。本项目的产物已按官方 Function Handlers 规范生成。
 
 ## 快速开始（方式一：EdgeOne 边缘函数，推荐）
 
@@ -64,15 +76,28 @@ move-car-bark/
 
 > 域名建议用已备案且开启 HTTPS 的域名，否则微信扫码可能会被拦截。
 
-## 快速开始（方式二：EdgeOne Pages）
+## 快速开始（方式二：EdgeOne Pages / Makers）
 
-把仓库推到 GitHub 后，在 EdgeOne Pages 里「导入 Git 仓库」：
+把仓库推到 GitHub 后，在 EdgeOne Pages 里「导入 Git 仓库」（或直接上传整个文件夹）：
 
-- 构建命令留空（纯静态），输出目录填 `.`
-- 函数目录默认为 `functions/`，本项目已提供 `functions/[[path]].js`
-- 在 Pages 的环境变量里添加 `BARK_KEY` 等配置
+- 框架预设：无 / Other
+- 构建命令：留空
+- 输出目录：`.`（根目录，里面有 `index.html`）
+- 环境变量里添加 `BARK_KEY` 等配置，然后部署
 
-由于 Pages 用 ES Module 写法，入口会 `import` `src/app.js`，因此这种方式**不需要** `worker.js`。
+平台会按函数目录结构自动生成路由：
+
+| 文件 | 路由 |
+| --- | --- |
+| `*/index.js` | `/` |
+| `*/api/[[default]].js` | `/api/notify`、`/api/config` |
+| `*/healthz.js` | `/healthz` |
+
+根目录的 `index.html` 是纯静态页，作用是**保证站点一定存在**——即使函数没被平台识别，扫码也能打开页面（此时页面顶部会提示接口未部署）。页面加载后会请求 `/api/config` 拿到车牌与电话，点按钮走 `/api/notify` 由边缘函数发推送。
+
+这种方式不需要 `worker.js`。
+
+> 注意：`*.edgeone.dev` 这类默认域名属于**预览链接**，带访问鉴权（`?eo_token=`）且会过期，链接过期后访问会返回 401 `Authentication Expired`；项目不存在或未部署成功时返回 404 `The site does not exist`。正式使用请绑定自己的已备案域名。
 
 ## 环境变量
 
@@ -103,11 +128,16 @@ cp .env.example .env      # 填入自己的配置
 npm run dev               # 打开 http://localhost:8787
 ```
 
-改完 `src/app.js` 后重新生成单文件版：
+本地预览刻意复刻线上形态：`/` 返回根目录静态 `index.html`，`/api/*` 走边缘函数；想看服务端渲染版访问 `/ssr`。
+
+改完 `src/app.js` 后重新生成全部产物：
 
 ```bash
-npm run build             # 输出 worker.js
+npm run build                    # 生成 worker.js + 三个函数目录 + index.html
+BAKE_CONFIG=1 npm run build      # 额外把 .env 里的车牌/电话烘焙进 index.html
 ```
+
+`index.html` 默认不含任何个人信息；如果你做的是**纯静态部署**（完全没有边缘函数），才需要用 `BAKE_CONFIG=1` 把车牌和电话写进去。
 
 ## 接口
 

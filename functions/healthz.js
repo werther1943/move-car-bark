@@ -1,14 +1,4 @@
-/* ==========================================================================
- * 挪车通知 Worker（EdgeOne 控制台 · 边缘函数 · 单文件版）
- * 本文件由 scripts/build-worker.js 自动生成，请勿直接编辑，源码见 src/app.js。
- *
- * 部署：EdgeOne 控制台 → 边缘函数 → 新建函数
- *       → 把本文件全部内容粘进代码编辑器（覆盖默认示例）
- *       → 「环境变量」里添加 BARK_KEY 等配置并部署
- *       → 配置触发规则（如 /* 或 /move-car/*）
- *
- * 也可以直接改文件顶部 HARD_CODE 里的常量（优先级低于环境变量）。
- * ========================================================================== */
+/* /healthz —— 本文件由 scripts/build-worker.js 自动生成，请勿直接编辑，源码见 src/app.js。 */
 
 /**
  * 挪车通知 · 核心逻辑
@@ -550,9 +540,18 @@ const CLIENT_JS = [
 /* 导出（打包脚本会剥离 export，生成 EdgeOne 单文件版本） */
 
 /* ------------------------------------------------------------------ */
-/* 入口：EdgeOne 控制台「边缘函数」（Service Worker 写法）             */
+/* Function Handlers —— EdgeOne Pages / Makers 入口                    */
+/* 注意：Pages 与 Makers 均不支持 addEventListener，必须使用 onRequest  */
 /* ------------------------------------------------------------------ */
-addEventListener('fetch', (event) => {
-  const scope = typeof env !== 'undefined' ? env : {};
-  event.respondWith(handleRequest(event.request, scope));
-});
+export async function onRequest(context) {
+  const request = (context && context.request) || context;
+  const scope = (context && context.env) || (typeof env !== 'undefined' ? env : null) || {};
+  return handleRequest(request, scope);
+}
+export async function onRequestGet(context) {
+  return onRequest(context);
+}
+export async function onRequestPost(context) {
+  return onRequest(context);
+}
+export default onRequest;
