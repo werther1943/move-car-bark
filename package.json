@@ -1,0 +1,23 @@
+{
+  "name": "move-car-bark",
+  "version": "1.0.0",
+  "private": true,
+  "description": "挪车二维码 —— 部署在腾讯云 EdgeOne 边缘函数上的免服务器挪车通知页，通过 Bark 推送车主",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-worker.js",
+    "dev": "node scripts/dev.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "edgeone",
+    "edge-function",
+    "worker",
+    "bark",
+    "nuoche",
+    "move-car"
+  ]
+}
