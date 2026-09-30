@@ -300,21 +300,9 @@ async function handleNotify(request, cfg, ip) {
     );
   }
 
-  let payload = {};
-  try {
-    payload = await request.json();
-  } catch (e) {
-    payload = {};
-  }
-
-  const visitorPlate = String(payload.plate || '').slice(0, 16).trim();
-  const message = String(payload.msg || '').slice(0, 60).trim();
-
   const title = cfg.plate ? '挪车提醒 · ' + cfg.plate : '挪车提醒';
   const lines = ['有朋友需要您挪车，请尽快处理。'];
   if (cfg.plate) lines.push('您的车辆：' + cfg.plate);
-  if (visitorPlate) lines.push('对方车牌：' + visitorPlate);
-  if (message) lines.push('对方留言：' + message);
   lines.push('时间：' + stamp(cfg.tzOffset));
   lines.push('来源：' + ip + ' · ' + shortUa(request.headers.get('User-Agent')));
 
@@ -427,14 +415,6 @@ function renderPage(cfg) {
     escapeHtml(cfg.tip) +
     '</p>\n' +
     warnBlock +
-    '  <div class="field">\n' +
-    '    <label for="vPlate">您的车牌号<span>选填</span></label>\n' +
-    '    <input id="vPlate" type="text" maxlength="12" autocomplete="off" placeholder="如：粤B12345">\n' +
-    '  </div>\n' +
-    '  <div class="field">\n' +
-    '    <label for="vMsg">留言<span>选填</span></label>\n' +
-    '    <input id="vMsg" type="text" maxlength="40" autocomplete="off" placeholder="如：您的车挡住车库出口了">\n' +
-    '  </div>\n' +
     '  <button id="btnNotify" class="btn btn-primary" type="button">\n' +
     '    <span class="spinner" aria-hidden="true"></span>\n' +
     '    <span id="btnText">通知车主挪车</span>\n' +
@@ -469,16 +449,10 @@ const CSS = [
   'border-radius:14px;padding:12px 16px;color:#fff}',
   '.plate-tag{font-size:12px;opacity:.85;background:rgba(255,255,255,.18);border-radius:6px;padding:3px 8px}',
   '.plate-no{font-size:19px;font-weight:700;letter-spacing:2px}',
-  '.tip{margin-top:12px;font-size:14px;line-height:1.6;color:#667085}',
+  '.tip{margin-top:12px;margin-bottom:18px;font-size:14px;line-height:1.6;color:#667085}',
   '.warn{margin-top:14px;font-size:13px;line-height:1.6;color:#92400e;background:#fff7ed;border:1px solid #fed7aa;',
   'border-radius:10px;padding:10px 12px}',
   '.warn code{background:#feebc8;border-radius:4px;padding:1px 5px;font-size:12px}',
-  '.field{margin-top:16px}',
-  '.field label{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:#475467;margin-bottom:7px;font-weight:600}',
-  '.field label span{font-weight:400;color:#98a2b3;font-size:12px}',
-  '.field input{width:100%;height:46px;border:1px solid #dfe3ec;border-radius:12px;padding:0 14px;font-size:16px;',
-  'color:#1c2333;background:#fbfcfe;outline:none;transition:border-color .2s,box-shadow .2s}',
-  '.field input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.14);background:#fff}',
   '.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:52px;margin-top:14px;',
   'border:none;border-radius:14px;font-size:17px;font-weight:700;cursor:pointer;',
   'transition:transform .12s,background .2s,box-shadow .2s;text-decoration:none}',
@@ -506,8 +480,6 @@ const CLIENT_JS = [
   "var btn=document.getElementById('btnNotify');",
   "var btnText=document.getElementById('btnText');",
   "var statusEl=document.getElementById('status');",
-  "var plateEl=document.getElementById('vPlate');",
-  "var msgEl=document.getElementById('vMsg');",
   "var STORE='mc_notify_until';",
   "var timer=null;",
   "function setStatus(text,cls){statusEl.textContent=text||'';statusEl.className='status'+(cls?' '+cls:'');}",
@@ -527,8 +499,7 @@ const CLIENT_JS = [
   "  if(!cfg.ready){setStatus('服务未配置 Bark 推送，请联系车主','err');return;}",
   "  if(btn.disabled)return;",
   "  btn.disabled=true;btn.classList.add('is-loading');btnText.textContent='正在发送…';setStatus('');",
-  "  fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},",
-  "    body:JSON.stringify({plate:plateEl.value,msg:msgEl.value})})",
+  "  fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})",
   "  .then(function(r){return r.json().then(function(d){return {status:r.status,data:d}})})",
   "  .then(function(res){",
   "    var d=res.data||{};var cd=parseInt(d.cooldown||cfg.cooldown||60,10);",
