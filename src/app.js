@@ -28,7 +28,8 @@ const DEFAULTS = {
   PLATE: '',
   PAGE_TITLE: '通知车主挪车',
   PAGE_TIP: '车辆挡道？点一下按钮，车主会立即收到 Bark 推送',
-  SHOW_PHONE: '0', // 1 = 页面上明文显示电话号码，0 = 脱敏显示
+  SHOW_PHONE: '0', // 1 = 拨号按钮下方额外显示脱敏号码，0 = 完全不显示号码
+  PAGE_TTL: '300', // 页面有效期（秒）；0 = 不限时。过期后需重新访问才能交互
   COOLDOWN: '60', // 同一 IP 两次推送之间的冷却秒数
   MAX_PER_HOUR: '5', // 同一 IP 每小时最多推送次数
   TIMEZONE_OFFSET: '8', // 推送时间使用的时区偏移（小时）
@@ -62,6 +63,7 @@ function getConfig(env) {
     title: readEnv(env, 'PAGE_TITLE'),
     tip: readEnv(env, 'PAGE_TIP'),
     showPhone: readEnv(env, 'SHOW_PHONE') === '1',
+    ttl: Math.max(0, parseInt(readEnv(env, 'PAGE_TTL'), 10) || 0),
     cooldown: Math.max(0, parseInt(readEnv(env, 'COOLDOWN'), 10) || 0),
     maxPerHour: Math.max(0, parseInt(readEnv(env, 'MAX_PER_HOUR'), 10) || 0),
     tzOffset: parseInt(readEnv(env, 'TIMEZONE_OFFSET'), 10) || 0,
@@ -321,9 +323,12 @@ function publicConfig(cfg) {
     title: cfg.title,
     tip: cfg.tip,
     hasPhone: !!cfg.phone,
-    phone: cfg.phone ? (cfg.showPhone ? cfg.phone : maskPhone(cfg.phone)) : '',
+    showPhone: cfg.showPhone,
+    phone: cfg.phone ? maskPhone(cfg.phone) : '',
     rawPhone: cfg.phone || '',
     cooldown: cfg.cooldown,
+    ttl: cfg.ttl,
+    serverNow: Date.now(),
     configured: barkKeys(cfg).length > 0,
   };
 }
@@ -368,6 +373,15 @@ async function handleRequest(request, env) {
  *      客户端会再拉一次 /api/config 校正 —— 同一份代码因此可以在
  *      「有边缘函数」和「只有静态托管」两种环境下都正常工作。
  */
+/**
+ * 页面骨架。
+ *
+ * 这里刻意只输出「骨架 + 内联配置」，具体内容交给 CLIENT_JS 渲染，原因是：
+ *   1. 服务端渲染（functions/index.js）时内联配置已带真实值，首屏无闪烁；
+ *   2. 纯静态部署（根目录 index.html）时内联配置是构建期烘焙的默认值，
+ *      客户端会再拉一次 /api/config 校正 —— 同一份代码因此可以在
+ *      「有边缘函数」和「只有静态托管」两种环境下都正常工作。
+ */
 function renderPage(cfg) {
   const ready = barkKeys(cfg).length > 0;
 
@@ -376,8 +390,10 @@ function renderPage(cfg) {
     tip: cfg.tip,
     plate: cfg.plate,
     phone: cfg.phone,
-    phoneDisplay: cfg.phone ? (cfg.showPhone ? cfg.phone : maskPhone(cfg.phone)) : '',
+    phoneDisplay: cfg.phone ? maskPhone(cfg.phone) : '',
+    showPhone: cfg.showPhone,
     cooldown: cfg.cooldown,
+    ttl: cfg.ttl,
     ready: ready,
   }).replace(/</g, '\\u003c');
 
@@ -386,9 +402,10 @@ function renderPage(cfg) {
     '<html lang="zh-CN">\n' +
     '<head>\n' +
     '<meta charset="UTF-8">\n' +
-    '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">\n' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n' +
     '<meta name="robots" content="noindex,nofollow">\n' +
-    '<meta name="theme-color" content="#f4f6fb">\n' +
+    '<meta name="theme-color" content="#f4f6fb" media="(prefers-color-scheme: light)">\n' +
+    '<meta name="theme-color" content="#0f1420" media="(prefers-color-scheme: dark)">\n' +
     '<meta name="format-detection" content="telephone=no">\n' +
     '<title>' +
     escapeHtml(cfg.title) +
@@ -401,20 +418,23 @@ function renderPage(cfg) {
     '<main class="card">\n' +
     '  <div class="brand"><span class="brand-icon">' +
     CAR_SVG +
-    '</span><span id="mcTitle">' +
+    '</span><h1 class="brand-text" id="mcTitle">' +
     escapeHtml(cfg.title) +
-    '</span></div>\n' +
+    '</h1></div>\n' +
     '  <div id="mcPlate"></div>\n' +
     '  <p class="tip" id="mcTip">' +
     escapeHtml(cfg.tip) +
     '</p>\n' +
     '  <div id="mcWarn"></div>\n' +
-    '  <button id="btnNotify" class="btn btn-primary" type="button">\n' +
-    '    <span class="spinner" aria-hidden="true"></span>\n' +
-    '    <span id="btnText">通知车主挪车</span>\n' +
-    '  </button>\n' +
-    '  <div id="mcCall"></div>\n' +
+    '  <div class="actions">\n' +
+    '    <button id="btnNotify" class="btn btn-primary" type="button">\n' +
+    '      <span class="spinner" aria-hidden="true"></span>\n' +
+    '      <span id="btnText">通知车主挪车</span>\n' +
+    '    </button>\n' +
+    '    <div id="mcCall"></div>\n' +
+    '  </div>\n' +
     '  <div id="status" class="status" role="status" aria-live="polite"></div>\n' +
+    '  <p class="ttl" id="mcTtl" hidden></p>\n' +
     '  <p class="foot">通知将以 Bark 推送直达车主手机 · 不会透露您的联系方式</p>\n' +
     '</main>\n' +
     '<script id="mc-cfg" type="application/json">' +
@@ -432,53 +452,85 @@ const CAR_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.5 16c-.83 0-1.5-.67-1.5-1.5S5.67 13 6.5 13s1.5.67 1.5 1.5S7.33 16 6.5 16zm11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM5 11l1.5-4.5h11L19 11H5z"/></svg>';
 
 const CSS = [
-  '*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}',
-  'html,body{min-height:100%}',
-  'body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;',
-  'background:linear-gradient(160deg,#eef2fb 0%,#f7f8fc 45%,#eaf1ff 100%);color:#1c2333;',
-  'display:flex;align-items:center;justify-content:center;padding:24px 16px calc(24px + env(safe-area-inset-bottom))}',
-  '.card{width:100%;max-width:400px;background:#fff;border-radius:20px;padding:28px 22px 22px;',
-  'box-shadow:0 10px 30px rgba(28,35,51,.08),0 2px 6px rgba(28,35,51,.04)}',
-  '.brand{display:flex;align-items:center;gap:10px;font-size:21px;font-weight:700;letter-spacing:.5px}',
-  '.brand-icon{display:flex;align-items:center}',
-  '.brand-icon svg{width:28px;height:28px;fill:#1f6feb}',
-  '.plate{margin-top:16px;display:flex;align-items:center;gap:10px;background:linear-gradient(135deg,#1f6feb,#3b82f6);',
-  'border-radius:14px;padding:12px 16px;color:#fff}',
-  '.plate-tag{font-size:12px;opacity:.85;background:rgba(255,255,255,.18);border-radius:6px;padding:3px 8px}',
-  '.plate-no{font-size:19px;font-weight:700;letter-spacing:2px}',
-  '.tip{margin-top:12px;margin-bottom:18px;font-size:14px;line-height:1.6;color:#667085}',
-  '.warn{margin-top:14px;font-size:13px;line-height:1.6;color:#92400e;background:#fff7ed;border:1px solid #fed7aa;',
-  'border-radius:10px;padding:10px 12px}',
-  '.warn code{background:#feebc8;border-radius:4px;padding:1px 5px;font-size:12px}',
-  '.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:52px;margin-top:14px;',
-  'border:none;border-radius:14px;font-size:17px;font-weight:700;cursor:pointer;',
-  'transition:transform .12s,background .2s,box-shadow .2s;text-decoration:none}',
-  '.btn:active{transform:scale(.985)}',
-  '.btn-primary{background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;box-shadow:0 6px 16px rgba(22,163,74,.28)}',
-  '.btn-primary:hover{background:linear-gradient(135deg,#16a34a,#15803d)}',
-  '.btn-primary[disabled]{background:#c8cdd8;box-shadow:none;cursor:not-allowed}',
-  '.btn-ghost{background:#f2f5fb;color:#1f6feb}',
-  '.btn-ghost:hover{background:#e8eefb}',
-  '.btn svg{width:20px;height:20px;fill:currentColor}',
-  '.spinner{display:none;width:16px;height:16px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;',
-  'border-radius:50%;animation:spin .7s linear infinite}',
+  '*,*::before,*::after{box-sizing:border-box}',
+  ':root{--bg1:#eef2fb;--bg2:#f7f8fc;--bg3:#eaf1ff;--card:#fff;--text:#141a26;--muted:#667085;',
+  '--line:#e6eaf2;--ghost:#f2f5fb;--brand:#1f6feb;--ok:#16a34a;--err:#dc2626;--code:rgba(0,0,0,.06);',
+  '--warn-bg:#fff7ed;--warn-line:#fed7aa;--warn-text:#92400e;',
+  '--shadow:0 12px 32px rgba(20,26,38,.10),0 2px 6px rgba(20,26,38,.05)}',
+  '@media (prefers-color-scheme:dark){:root{--bg1:#0f1420;--bg2:#131a28;--bg3:#101827;--card:#171f2e;',
+  '--text:#e9edf6;--muted:#98a2b3;--line:#27324a;--ghost:#1e2739;--brand:#5b9bff;--ok:#22c55e;--err:#f87171;',
+  '--code:rgba(255,255,255,.1);--warn-bg:#3a2a13;--warn-line:#5c441f;--warn-text:#f3c98b;',
+  '--shadow:0 12px 32px rgba(0,0,0,.35)}}',
+  'html{-webkit-text-size-adjust:100%;color-scheme:light dark}',
+  'body{margin:0;padding:0;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;',
+  'padding:clamp(16px,5vw,40px) clamp(14px,4.5vw,24px) calc(clamp(16px,5vw,40px) + env(safe-area-inset-bottom));',
+  'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;',
+  'color:var(--text);background:linear-gradient(160deg,var(--bg1) 0%,var(--bg2) 45%,var(--bg3) 100%);',
+  '-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}',
+  '.card{width:100%;max-width:min(420px,100%);background:var(--card);border-radius:clamp(16px,4.5vw,22px);',
+  'padding:clamp(22px,6.5vw,34px) clamp(18px,5.5vw,28px) clamp(18px,5vw,26px);box-shadow:var(--shadow);',
+  'animation:rise .36s cubic-bezier(.2,.7,.3,1) both}',
+  '@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}',
+  '.brand{display:flex;align-items:center;justify-content:center;gap:10px;text-align:center}',
+  '.brand-icon{display:flex;flex:none}',
+  '.brand-icon svg{width:clamp(24px,7vw,30px);height:clamp(24px,7vw,30px);fill:var(--brand)}',
+  '.brand-text{margin:0;font-size:clamp(18px,5.4vw,22px);font-weight:700;letter-spacing:.5px;line-height:1.35}',
+  '.plate{margin-top:clamp(14px,4vw,18px);display:flex;align-items:center;justify-content:center;gap:10px;',
+  'background:linear-gradient(135deg,var(--brand),#3b82f6);border-radius:14px;',
+  'padding:clamp(10px,3vw,14px) clamp(14px,4vw,18px);color:#fff}',
+  '.plate-tag{font-size:clamp(11px,3vw,12.5px);opacity:.88;background:rgba(255,255,255,.2);border-radius:6px;padding:3px 8px}',
+  '.plate-no{font-size:clamp(17px,5vw,20px);font-weight:700;letter-spacing:2px}',
+  '.tip{margin:clamp(12px,3.5vw,16px) 0 0;font-size:clamp(13px,3.7vw,15px);line-height:1.65;color:var(--muted);text-align:center}',
+  '.warn{margin-top:14px;font-size:clamp(12px,3.4vw,13.5px);line-height:1.6;color:var(--warn-text);',
+  'background:var(--warn-bg);border:1px solid var(--warn-line);border-radius:12px;padding:10px 12px;text-align:left}',
+  '.warn code{background:var(--code);border-radius:4px;padding:1px 5px;font-size:.92em}',
+  '.actions{margin-top:clamp(18px,5vw,24px)}',
+  '.btn{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:8px;width:100%;',
+  'min-height:clamp(48px,13vw,56px);border:0;border-radius:14px;padding:10px 16px;font-family:inherit;',
+  'font-size:clamp(15px,4.3vw,17px);font-weight:700;color:#fff;text-decoration:none;cursor:pointer;',
+  'transition:transform .14s ease,opacity .2s ease,background-color .2s ease,box-shadow .2s ease;touch-action:manipulation}',
+  '.btn+.btn{margin-top:12px}',
+  '.btn svg{width:clamp(18px,5vw,20px);height:clamp(18px,5vw,20px);fill:currentColor;flex:none}',
+  '.btn small{flex-basis:100%;font-size:clamp(10.5px,3vw,12px);font-weight:400;opacity:.78;letter-spacing:.3px}',
+  '.btn-primary{background:linear-gradient(135deg,#22c55e,#16a34a);box-shadow:0 8px 20px rgba(22,163,74,.26)}',
+  '.btn-ghost{background:var(--ghost);color:var(--brand);box-shadow:none}',
+  '.btn:focus-visible{outline:3px solid rgba(31,111,235,.45);outline-offset:2px}',
+  '.btn:active:not([disabled]):not(.is-disabled){transform:scale(.975)}',
+  '.btn[disabled],.btn.is-disabled{opacity:.5;cursor:not-allowed;pointer-events:none}',
+  '.spinner{display:none;width:16px;height:16px;flex:none;border:2px solid rgba(255,255,255,.45);',
+  'border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}',
   '.is-loading .spinner{display:block}',
   '@keyframes spin{to{transform:rotate(360deg)}}',
-  '.status{margin-top:14px;min-height:20px;font-size:14px;line-height:1.6;text-align:center;color:#667085}',
-  '.status.ok{color:#15803d}.status.err{color:#dc2626}',
-  '.foot{margin-top:18px;font-size:12px;color:#98a2b3;text-align:center;line-height:1.6}',
-  '@media (max-width:360px){.card{padding:22px 16px 18px}}',
+  '.status{margin-top:clamp(12px,3.5vw,16px);min-height:1.4em;font-size:clamp(13px,3.6vw,14.5px);',
+  'line-height:1.6;text-align:center;color:var(--muted);transition:color .2s ease}',
+  '.status.ok{color:var(--ok)}',
+  '.status.err{color:var(--err)}',
+  '.ttl{display:flex;align-items:center;justify-content:center;gap:7px;margin:clamp(14px,4vw,18px) 0 0;',
+  'font-size:clamp(11.5px,3.3vw,13px);color:var(--muted);font-variant-numeric:tabular-nums;letter-spacing:.2px}',
+  '.ttl-dot{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none;animation:pulse 2s ease-in-out infinite}',
+  '@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}',
+  '.ttl.is-urgent{color:#b45309}',
+  '.ttl.is-urgent .ttl-dot{background:#f59e0b}',
+  '.ttl.is-expired{color:var(--err)}',
+  '.ttl.is-expired .ttl-dot{background:var(--err);animation:none}',
+  '.foot{margin:clamp(14px,4vw,18px) 0 0;font-size:clamp(11px,3.1vw,12.5px);color:var(--muted);opacity:.85;',
+  'text-align:center;line-height:1.6}',
+  '@media (max-width:360px){.card{padding:20px 14px 16px}}',
+  '@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}',
 ].join('');
 
 const CLIENT_JS = [
   '(function(){',
   'function el(id){return document.getElementById(id)||{style:{},classList:{add:function(){},remove:function(){}}};}',
   'function esc(s){return String(s==null?"":""+s).replace(/[&<>]/g,function(c){return c==="&"?"&amp;":(c==="<"?"&lt;":"&gt;");});}',
-  'var cfg={title:"",tip:"",plate:"",phone:"",phoneDisplay:"",cooldown:60,ready:true};',
+  'function tickMs(){return (window.performance&&performance.now)?performance.now():Date.now();}',
+  'var cfg={title:"",tip:"",plate:"",phone:"",phoneDisplay:"",showPhone:false,cooldown:60,ttl:300,ready:true};',
   'try{var rawEl=document.getElementById("mc-cfg");var raw=JSON.parse((rawEl&&rawEl.textContent)||"{}");for(var k in raw){if(Object.prototype.hasOwnProperty.call(raw,k))cfg[k]=raw[k];}}catch(e){}',
   'var PHONE_SVG=\'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8c1.2 2.4 3.2 4.4 5.6 5.6l2.1-2.1c.3-.3.7-.4 1.1-.2 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.2 1.1l-2.3 2.1z"/></svg>\';',
-  'var btn=el("btnNotify"),btnText=el("btnText"),statusEl=el("status");',
-  'var STORE="mc_notify_until",timer=null,apiState="pending";',
+  'var btn=el("btnNotify"),btnText=el("btnText"),statusEl=el("status"),ttlEl=el("mcTtl");',
+  'var STORE="mc_notify_until",timer=null,ttlTimer=null,apiState="pending",expired=false;',
+  // 用 performance.now() 单调计时，避免用户改系统时间绕过有效期
+  'var T0=tickMs();',
   'function setStatus(t,c){statusEl.textContent=t||"";statusEl.className="status"+(c?" "+c:"");}',
   'function until(){try{return parseInt(localStorage.getItem(STORE)||"0",10);}catch(e){return 0;}}',
   'function lock(sec){try{localStorage.setItem(STORE,String(Date.now()+sec*1000));}catch(e){}startTick();}',
@@ -486,10 +538,37 @@ const CLIENT_JS = [
   '  if(timer){clearInterval(timer);timer=null;}',
   '  var check=function(){',
   '    var left=Math.ceil((until()-Date.now())/1000);',
-  '    if(left<=0){if(timer){clearInterval(timer);timer=null;}btn.disabled=false;btn.classList.remove("is-loading");btnText.textContent="通知车主挪车";setStatus("");return false;}',
-  '    btn.disabled=true;btnText.textContent="请等待 "+left+" 秒";return true;',
+  '    if(left<=0){if(timer){clearInterval(timer);timer=null;}if(!expired){btn.disabled=false;btn.classList.remove("is-loading");btnText.textContent="通知车主挪车";if(!statusEl.textContent)setStatus("");}return false;}',
+  '    btn.disabled=true;btn.classList.remove("is-loading");btnText.textContent="请等待 "+left+" 秒";return true;',
   '  };',
   '  if(check()){timer=setInterval(check,1000);}',
+  '}',
+  'function leftSec(){if(!cfg.ttl)return -1;return Math.max(0,Math.ceil((cfg.ttl-(tickMs()-T0)/1000)));}',
+  'function expire(){',
+  '  if(expired)return;',
+  '  expired=true;',
+  '  if(ttlTimer){clearInterval(ttlTimer);ttlTimer=null;}',
+  '  if(timer){clearInterval(timer);timer=null;}',
+  '  btn.disabled=true;btn.classList.remove("is-loading");btnText.textContent="通知车主挪车";',
+  '  var a=document.querySelector("#mcCall a");if(a){a.classList.add("is-disabled");a.removeAttribute("href");}',
+  '  setStatus("页面已超过有效时间，请重新扫码访问","err");',
+  '  ttlEl.hidden=false;ttlEl.className="ttl is-expired";ttlEl.innerHTML=\'<span class="ttl-dot"></span>链接已失效 · 请重新扫码打开\';',
+  '}',
+  'function renderTtl(){',
+  '  if(expired)return;',
+  '  if(!cfg.ttl){ttlEl.hidden=true;if(ttlTimer){clearInterval(ttlTimer);ttlTimer=null;}return;}',
+  '  var s=leftSec();',
+  '  if(s<=0){expire();return;}',
+  '  ttlEl.hidden=false;',
+  '  var m=Math.floor(s/60),r=s%60;',
+  '  var txt=m>0?(m+" 分 "+r+" 秒"):(r+" 秒");',
+  '  ttlEl.className="ttl"+(s<=60?" is-urgent":"");',
+  '  ttlEl.innerHTML=\'<span class="ttl-dot"></span>页面有效时间剩余 \'+txt;',
+  '}',
+  'function startTtl(){',
+  '  if(ttlTimer){clearInterval(ttlTimer);ttlTimer=null;}',
+  '  renderTtl();',
+  '  if(!expired&&cfg.ttl){ttlTimer=setInterval(renderTtl,1000);}',
   '}',
   'function render(){',
   '  var t=cfg.title||"通知车主挪车";',
@@ -497,7 +576,8 @@ const CLIENT_JS = [
   '  el("mcTitle").textContent=t;',
   '  el("mcTip").textContent=cfg.tip||"";',
   '  el("mcPlate").innerHTML=cfg.plate?\'<div class="plate"><span class="plate-tag">车辆</span><span class="plate-no">\'+esc(cfg.plate)+"</span></div>":"";',
-  '  el("mcCall").innerHTML=cfg.phone?\'<a class="btn btn-ghost" href="tel:\'+esc(cfg.phone)+\'">\'+PHONE_SVG+"<span>拨打车主电话 "+esc(cfg.phoneDisplay||cfg.phone)+"</span></a>":"";',
+  // 拨号按钮只写「拨打车主电话」，不显示号码；SHOW_PHONE=1 时才以小字附脱敏号码
+  '  el("mcCall").innerHTML=cfg.phone?\'<a class="btn btn-ghost" href="tel:\'+esc(cfg.phone)+\'">\'+PHONE_SVG+"<span>拨打车主电话</span>"+(cfg.showPhone?"<small>"+esc(cfg.phoneDisplay||cfg.phone)+"</small>":"")+"</a>":"";',
   '  var w="";',
   '  if(apiState==="fail"){w=\'<div class="warn">未检测到服务端接口 <code>/api/config</code>。推送需要随站点一起部署边缘函数（<code>edge-functions/</code> 或 <code>functions/</code> 目录）。</div>\';}',
   '  else if(apiState==="ok"&&!cfg.ready){w=\'<div class="warn">服务端尚未配置 <code>BARK_KEY</code>，推送功能不可用。请在 EdgeOne 控制台「环境变量」中添加后重新部署。</div>\';}',
@@ -509,22 +589,26 @@ const CLIENT_JS = [
   '  if(d.tip)cfg.tip=d.tip;',
   '  if(d.rawPhone)cfg.phone=d.rawPhone;',
   '  if(d.phone)cfg.phoneDisplay=d.phone;',
+  '  if(typeof d.showPhone==="boolean")cfg.showPhone=d.showPhone;',
   '  if(d.cooldown!==undefined&&d.cooldown!==null)cfg.cooldown=parseInt(d.cooldown,10)||0;',
+  '  if(d.ttl!==undefined&&d.ttl!==null)cfg.ttl=parseInt(d.ttl,10)||0;',
   '  cfg.ready=d.configured!==false;',
   '}',
+  'function buzz(ms){try{if(navigator&&navigator.vibrate)navigator.vibrate(ms);}catch(e){}}',
   'btn.addEventListener("click",function(){',
+  '  if(expired){setStatus("页面已超过有效时间，请重新扫码访问","err");return;}',
   '  if(btn.disabled)return;',
   '  btn.disabled=true;btn.classList.add("is-loading");btnText.textContent="正在发送…";setStatus("");',
   '  fetch("/api/notify",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})',
   '  .then(function(r){var ct=(r.headers.get("content-type")||"").toLowerCase();if(ct.indexOf("json")<0){var e=new Error("NO_API");e.noapi=true;throw e;}return r.json().then(function(d){return {status:r.status,data:d||{}};});})',
   '  .then(function(res){',
   '    var d=res.data,cd=parseInt(d.cooldown||cfg.cooldown||60,10);',
-  '    if(d.ok){setStatus("已通知车主，请稍等片刻","ok");lock(cd);return;}',
-  '    btn.classList.remove("is-loading");btn.disabled=false;btnText.textContent="通知车主挪车";',
+  '    if(d.ok){setStatus("已通知车主，请稍等片刻","ok");buzz(14);lock(cd);return;}',
+  '    btn.classList.remove("is-loading");btn.disabled=false;btnText.textContent="通知车主挪车";buzz(28);',
   '    if(d.code==="COOLDOWN"||d.code==="LIMIT"){setStatus("发送太频繁了，"+(d.retryAfter||60)+" 秒后再试","err");lock(d.retryAfter||cd);}',
   '    else{setStatus("发送失败："+(d.message||("错误 "+(d.code||res.status))),"err");}',
   '  })',
-  '  .catch(function(err){btn.classList.remove("is-loading");btn.disabled=false;btnText.textContent="通知车主挪车";setStatus(err&&err.noapi?"推送接口未部署或不可用，请检查边缘函数是否随站点部署":"网络异常，请稍后重试","err");});',
+  '  .catch(function(err){btn.classList.remove("is-loading");btn.disabled=false;btnText.textContent="通知车主挪车";buzz(28);setStatus(err&&err.noapi?"推送接口未部署或不可用，请检查边缘函数是否随站点部署":"网络异常，请稍后重试","err");});',
   '});',
   'fetch("/api/config",{headers:{"Accept":"application/json"}})',
   '  .then(function(r){var ct=(r.headers.get("content-type")||"").toLowerCase();if(!r.ok||ct.indexOf("json")<0)throw new Error("NO_API");return r.json();})',
@@ -532,6 +616,8 @@ const CLIENT_JS = [
   '  .catch(function(){apiState="fail";render();});',
   'render();',
   'startTick();',
+  'startTtl();',
+  'document.addEventListener("visibilitychange",function(){if(!document.hidden)renderTtl();});',
   '})();',
 ].join('\n');
 
